@@ -616,15 +616,23 @@ void CompilerMSL::emit_entry_point_declarations()
 	// Emit buffer arrays here.
 	for (uint32_t array_id : buffer_arrays)
 	{
+		/* UE Change Begin: Allow Metal to use the array<T> template to make arrays a value type */
+		/* UE Change Begin: Force the use of C style array declaration. */
 		const auto &var = get<SPIRVariable>(array_id);
 		const auto &type = get_variable_data_type(var);
+		auto new_type = type;
+		new_type.array.clear();
+		const auto &base_type = get<SPIRType>(var.basetype);
+		new_type.storage = base_type.storage;
 		string name = to_name(array_id);
-		statement(get_argument_address_space(var) + " " + type_to_glsl(type) + "* " + name + "[] =");
+		statement("unsafe_array<" + get_argument_address_space(var) + " " + type_to_glsl(new_type) + "*," + convert_to_string(type.array[0]) + "> " + name + " =");
 		begin_scope();
 		for (uint32_t i = 0; i < type.array[0]; ++i)
 			statement(name + "_" + convert_to_string(i) + ",");
 		end_scope_decl();
 		statement_no_indent("");
+		/* UE Change End: Allow Metal to use the array<T> template to make arrays a value type */
+		/* UE Change End: Force the use of C style array declaration. */
 	}
 	// For some reason, without this, we end up emitting the arrays twice.
 	buffer_arrays.clear();
@@ -658,7 +666,9 @@ string CompilerMSL::compile()
 	backend.can_return_array = false;
 	backend.boolean_mix_support = false;
 	backend.allow_truncated_access_chain = true;
-	backend.array_is_value_type = false;
+	/* UE Change Begin: Allow Metal to use the array<T> template to make arrays a value type */
+	backend.array_is_value_type = true;
+	/* UE Change End: Allow Metal to use the array<T> template to make arrays a value type */
 	backend.comparison_image_samples_scalar = true;
 	backend.native_pointers = true;
 	backend.nonuniform_qualifier = "";
@@ -761,11 +771,76 @@ void CompilerMSL::preprocess_op_codes()
 
 	suppress_missing_prototypes = preproc.suppress_missing_prototypes;
 
+    /* UE Change Begin: Allow Metal to use the array<T> template to make arrays a value type */
+    add_pragma_line("#pragma clang diagnostic ignored \"-Wmissing-braces\"");
+    /* UE Change End: Allow Metal to use the array<T> template to make arrays a value type */
+    
+    add_pragma_line("#pragma clang diagnostic ignored \"-Wunused-variable\"");
+
 	if (preproc.uses_atomics)
 	{
 		add_header_line("#include <metal_atomic>");
-		add_pragma_line("#pragma clang diagnostic ignored \"-Wunused-variable\"");
 	}
+	
+	/* UE Change Begin: Allow Metal to use the array<T> template to make arrays a value type */
+	// UnsafeArray
+	{
+		add_header_line("	");
+		add_header_line("template <typename T, size_t Num>");
+		add_header_line("struct unsafe_array");
+		add_header_line("{");
+		add_header_line("	T __Elements[Num ? Num : 1];");
+		add_header_line("	");
+		add_header_line("	constexpr size_t size() const thread { return Num; }");
+		add_header_line("	constexpr size_t max_size() const thread { return Num; }");
+		add_header_line("	constexpr bool empty() const thread { return Num == 0; }");
+		add_header_line("	");
+		add_header_line("	constexpr size_t size() const device { return Num; }");
+		add_header_line("	constexpr size_t max_size() const device { return Num; }");
+		add_header_line("	constexpr bool empty() const device { return Num == 0; }");
+		add_header_line("	");
+		add_header_line("	constexpr size_t size() const constant { return Num; }");
+		add_header_line("	constexpr size_t max_size() const constant { return Num; }");
+		add_header_line("	constexpr bool empty() const constant { return Num == 0; }");
+		add_header_line("	");
+		add_header_line("	constexpr size_t size() const threadgroup { return Num; }");
+		add_header_line("	constexpr size_t max_size() const threadgroup { return Num; }");
+		add_header_line("	constexpr bool empty() const threadgroup { return Num == 0; }");
+		add_header_line("	");
+		add_header_line("	thread T &operator[](size_t pos) thread");
+		add_header_line("	{");
+		add_header_line("		return __Elements[pos];");
+		add_header_line("	}");
+		add_header_line("	constexpr const thread T &operator[](size_t pos) const thread");
+		add_header_line("	{");
+		add_header_line("		return __Elements[pos];");
+		add_header_line("	}");
+		add_header_line("	");
+		add_header_line("	device T &operator[](size_t pos) device");
+		add_header_line("	{");
+		add_header_line("		return __Elements[pos];");
+		add_header_line("	}");
+		add_header_line("	constexpr const device T &operator[](size_t pos) const device");
+		add_header_line("	{");
+		add_header_line("		return __Elements[pos];");
+		add_header_line("	}");
+		add_header_line("	");
+		add_header_line("	constexpr const constant T &operator[](size_t pos) const constant");
+		add_header_line("	{");
+		add_header_line("		return __Elements[pos];");
+		add_header_line("	}");
+		add_header_line("	");
+		add_header_line("	threadgroup T &operator[](size_t pos) threadgroup");
+		add_header_line("	{");
+		add_header_line("		return __Elements[pos];");
+		add_header_line("	}");
+		add_header_line("	constexpr const threadgroup T &operator[](size_t pos) const threadgroup");
+		add_header_line("	{");
+		add_header_line("		return __Elements[pos];");
+		add_header_line("	}");
+		add_header_line("};");
+	}
+	/* UE Change End: Allow Metal to use the array<T> template to make arrays a value type */
 
 	// Metal vertex functions that write to resources must disable rasterization and return void.
 	if (preproc.uses_resource_write)
@@ -2552,77 +2627,12 @@ void CompilerMSL::emit_custom_functions()
 			statement("T sign(T x)");
 			begin_scope();
 			statement("return select(select(select(x, T(0), x == T(0)), T(1), x > T(0)), T(-1), x < T(0));");
-			end_scope();
-			statement("");
-			break;
-
-		case SPVFuncImplArrayCopy:
-			statement("// Implementation of an array copy function to cover GLSL's ability to copy an array via "
-			          "assignment.");
-			statement("template<typename T, uint N>");
-			statement("void spvArrayCopyFromStack1(thread T (&dst)[N], thread const T (&src)[N])");
-			begin_scope();
-			statement("for (uint i = 0; i < N; dst[i] = src[i], i++);");
-			end_scope();
-			statement("");
-
-			statement("template<typename T, uint N>");
-			statement("void spvArrayCopyFromConstant1(thread T (&dst)[N], constant T (&src)[N])");
-			begin_scope();
-			statement("for (uint i = 0; i < N; dst[i] = src[i], i++);");
-			end_scope();
-			statement("");
-			break;
-
-		case SPVFuncImplArrayOfArrayCopy2Dim:
-		case SPVFuncImplArrayOfArrayCopy3Dim:
-		case SPVFuncImplArrayOfArrayCopy4Dim:
-		case SPVFuncImplArrayOfArrayCopy5Dim:
-		case SPVFuncImplArrayOfArrayCopy6Dim:
-		{
-			static const char *function_name_tags[] = {
-				"FromStack",
-				"FromConstant",
-			};
-
-			static const char *src_address_space[] = {
-				"thread const",
-				"constant",
-			};
-
-			for (uint32_t variant = 0; variant < 2; variant++)
-			{
-				uint32_t dimensions = spv_func - SPVFuncImplArrayCopyMultidimBase;
-				string tmp = "template<typename T";
-				for (uint8_t i = 0; i < dimensions; i++)
-				{
-					tmp += ", uint ";
-					tmp += 'A' + i;
-				}
-				tmp += ">";
-				statement(tmp);
-
-				string array_arg;
-				for (uint8_t i = 0; i < dimensions; i++)
-				{
-					array_arg += "[";
-					array_arg += 'A' + i;
-					array_arg += "]";
-				}
-
-				statement("void spvArrayCopy", function_name_tags[variant], dimensions, "(thread T (&dst)", array_arg,
-				          ", ", src_address_space[variant], " T (&src)", array_arg, ")");
-
-				begin_scope();
-				statement("for (uint i = 0; i < A; i++)");
-				begin_scope();
-				statement("spvArrayCopy", function_name_tags[variant], dimensions - 1, "(dst[i], src[i]);");
-				end_scope();
 				end_scope();
 				statement("");
-			}
 			break;
-		}
+
+		/* UE Change Begin: Allow Metal to use the array<T> template to make arrays a value type */
+		/* UE Change End: Allow Metal to use the array<T> template to make arrays a value type */
 
 		case SPVFuncImplTexelBufferCoords:
 		{
@@ -3057,7 +3067,7 @@ void CompilerMSL::declare_undefined_values()
 	bool emitted = false;
 	ir.for_each_typed_id<SPIRUndef>([&](uint32_t, SPIRUndef &undef) {
 		auto &type = this->get<SPIRType>(undef.basetype);
-		statement("constant ", variable_decl(type, to_name(undef.self), undef.self), " = {};");
+		statement("constant ", CompilerGLSL::variable_decl(type, to_name(undef.self), undef.self), " = {};");
 		emitted = true;
 	});
 
@@ -3173,7 +3183,7 @@ void CompilerMSL::emit_specialization_constants_and_structs()
 			auto &c = id.get<SPIRConstantOp>();
 			auto &type = get<SPIRType>(c.basetype);
 			auto name = to_name(c.self);
-			statement("constant ", variable_decl(type, name), " = ", constant_op_expression(c), ";");
+			statement("constant ", CompilerGLSL::variable_decl(type, name), " = ", constant_op_expression(c), ";");
 			emitted = true;
 		}
 		else if (id.get_type() == TypeType)
@@ -3299,7 +3309,7 @@ bool CompilerMSL::emit_tessellation_access_chain(const uint32_t *ops, uint32_t l
 			if (is_matrix(*type) || is_array(*type) || type->basetype == SPIRType::Struct)
 			{
 				std::string temp_name = join(to_name(var->self), "_", ops[1]);
-				statement(variable_decl(*type, temp_name, var->self), ";");
+				statement(CompilerGLSL::variable_decl(*type, temp_name, var->self), ";");
 				// Set up the initializer for this temporary variable.
 				indices.push_back(const_mbr_id);
 				if (type->basetype == SPIRType::Struct)
@@ -4006,7 +4016,7 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 		uint32_t op1 = ops[3];
 		forced_temporaries.insert(result_id);
 		auto &type = get<SPIRType>(result_type);
-		statement(variable_decl(type, to_name(result_id)), ";");
+		statement(CompilerGLSL::variable_decl(type, to_name(result_id)), ";");
 		set<SPIRExpression>(result_id, to_name(result_id), result_type, true);
 
 		auto &res_type = get<SPIRType>(type.member_types[1]);
@@ -4038,7 +4048,7 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 		uint32_t op1 = ops[3];
 		forced_temporaries.insert(result_id);
 		auto &type = get<SPIRType>(result_type);
-		statement(variable_decl(type, to_name(result_id)), ";");
+		statement(CompilerGLSL::variable_decl(type, to_name(result_id)), ";");
 		set<SPIRExpression>(result_id, to_name(result_id), result_type, true);
 
 		statement(to_expression(result_id), ".", to_member_name(type, 0), " = ", to_enclosed_expression(op0), " * ",
@@ -4165,48 +4175,9 @@ void CompilerMSL::emit_barrier(uint32_t id_exe_scope, uint32_t id_mem_scope, uin
 
 void CompilerMSL::emit_array_copy(const string &lhs, uint32_t rhs_id)
 {
-	// Assignment from an array initializer is fine.
-	auto &type = expression_type(rhs_id);
-	auto *var = maybe_get_backing_variable(rhs_id);
-
-	// Unfortunately, we cannot template on address space in MSL,
-	// so explicit address space redirection it is ...
-	bool is_constant = false;
-	if (ir.ids[rhs_id].get_type() == TypeConstant)
-	{
-		is_constant = true;
-	}
-	else if (var && var->remapped_variable && var->statically_assigned &&
-	         ir.ids[var->static_expression].get_type() == TypeConstant)
-	{
-		is_constant = true;
-	}
-
-	// For the case where we have OpLoad triggering an array copy,
-	// we cannot easily detect this case ahead of time since it's
-	// context dependent. We might have to force a recompile here
-	// if this is the only use of array copies in our shader.
-	if (type.array.size() > 1)
-	{
-		if (type.array.size() > SPVFuncImplArrayCopyMultidimMax)
-			SPIRV_CROSS_THROW("Cannot support this many dimensions for arrays of arrays.");
-		auto func = static_cast<SPVFuncImpl>(SPVFuncImplArrayCopyMultidimBase + type.array.size());
-		if (spv_function_implementations.count(func) == 0)
-		{
-			spv_function_implementations.insert(func);
-			suppress_missing_prototypes = true;
-			force_recompile();
-		}
-	}
-	else if (spv_function_implementations.count(SPVFuncImplArrayCopy) == 0)
-	{
-		spv_function_implementations.insert(SPVFuncImplArrayCopy);
-		suppress_missing_prototypes = true;
-		force_recompile();
-	}
-
-	const char *tag = is_constant ? "FromConstant" : "FromStack";
-	statement("spvArrayCopy", tag, type.array.size(), "(", lhs, ", ", to_expression(rhs_id), ");");
+	/* UE Change Begin: Allow Metal to use the array<T> template to make arrays a value type */
+	statement(lhs, " = ", to_expression(rhs_id), ";");
+	/* UE Change End: Allow Metal to use the array<T> template to make arrays a value type */
 }
 
 // Since MSL does not allow arrays to be copied via simple variable assignment,
@@ -4293,7 +4264,7 @@ void CompilerMSL::emit_atomic_func_op(uint32_t result_type, uint32_t result_id, 
 		// the CAS loop, otherwise it will loop infinitely, with the comparison test always failing.
 		// The function updates the comparitor value from the memory value, so the additional
 		// comparison test evaluates the memory value against the expected value.
-		statement(variable_decl(type, to_name(result_id)), ";");
+		statement(CompilerGLSL::variable_decl(type, to_name(result_id)), ";");
 		statement("do");
 		begin_scope();
 		statement(to_name(result_id), " = ", to_expression(op1), ";");
@@ -5302,6 +5273,10 @@ string CompilerMSL::to_struct_member(const SPIRType &type, uint32_t member_type_
 
 	const SPIRType *effective_membertype = &membertype;
 	SPIRType override_type;
+	
+	/* UE Change Begin: Allow Metal to use the array<T> template to make arrays a value type */
+	string packed_array_type;
+	string unpacked_array_type;
 
 	uint32_t orig_id = 0;
 	if (has_extended_member_decoration(type.self, index, SPIRVCrossDecorationInterfaceOrigID))
@@ -5319,9 +5294,11 @@ string CompilerMSL::to_struct_member(const SPIRType &type, uint32_t member_type_
 			pack_pfx = "packed_";
 			string base_type = membertype.width == 16 ? "half" : "float";
 			string td_line = "typedef ";
+			unpacked_array_type = base_type + to_string(membertype.columns) + "x" + to_string(membertype.vecsize);
+			packed_array_type = "packed_" + base_type + to_string(membertype.columns) + "x" + to_string(membertype.vecsize);
 			td_line += base_type + to_string(membertype.vecsize) + "x" + to_string(membertype.columns);
-			td_line += " " + pack_pfx;
-			td_line += base_type + to_string(membertype.columns) + "x" + to_string(membertype.vecsize);
+			td_line += " ";
+			td_line += packed_array_type;
 			td_line += ";";
 			add_typedef_line(td_line);
 		}
@@ -5348,11 +5325,32 @@ string CompilerMSL::to_struct_member(const SPIRType &type, uint32_t member_type_
 	if (membertype.basetype != SPIRType::Image && membertype.basetype != SPIRType::Sampler &&
 	    membertype.basetype != SPIRType::SampledImage)
 	{
+		/* UE Change Begin: Force the use of C style array declaration. */
+		BuiltIn builtin = BuiltInMax;
+		use_builtin_array = is_member_builtin(type, index, &builtin);
+		/* UE Change End: Force the use of C style array declaration. */
+		
 		array_type = type_to_array_glsl(membertype);
 	}
+	
+	if (!use_builtin_array && packed_array_type.length() > 0 && unpacked_array_type.length() > 0)
+		pack_pfx = "";
 
-	return join(pack_pfx, type_to_glsl(*effective_membertype, orig_id), " ", qualifier, to_member_name(type, index),
+	string result = join(pack_pfx, type_to_glsl(*effective_membertype, orig_id), " ", qualifier, to_member_name(type, index),
 	            member_attribute_qualifier(type, index), array_type, ";");
+	
+	if (!use_builtin_array && packed_array_type.length() > 0 && unpacked_array_type.length() > 0)
+	{
+		auto it = result.find(unpacked_array_type);
+		if (it != std::string::npos)
+		{
+			result.replace(it, unpacked_array_type.length(), packed_array_type);
+		}
+	}
+	/* UE Change End: Allow Metal to use the array<T> template to make arrays a value type */
+	
+	use_builtin_array = false;
+	return result;
 }
 
 // Emit a structure member, padding and packing to maintain the correct memeber alignments.
@@ -6057,6 +6055,9 @@ void CompilerMSL::entry_point_args_discrete_descriptors(string &ep_args)
 				if (array_size == 0)
 					SPIRV_CROSS_THROW("Unsized arrays of buffers are not supported in MSL.");
 
+				/* UE Change Begin: Allow Metal to use the array<T> template to make arrays a value type */
+				/* UE Change Begin: Force the use of C style array declaration. */
+				use_builtin_array = true;
 				buffer_arrays.push_back(var_id);
 				for (uint32_t i = 0; i < array_size; ++i)
 				{
@@ -6066,6 +6067,9 @@ void CompilerMSL::entry_point_args_discrete_descriptors(string &ep_args)
 					           convert_to_string(i);
 					ep_args += " [[buffer(" + convert_to_string(r.index + i) + ")]]";
 				}
+				use_builtin_array = false;
+				/* UE Change End: Allow Metal to use the array<T> template to make arrays a value type */
+				/* UE Change End: Force the use of C style array declaration. */
 			}
 			else
 			{
@@ -6405,20 +6409,51 @@ string CompilerMSL::argument_decl(const SPIRFunction::Parameter &arg)
 	string decl;
 	if (constref)
 		decl += "const ";
-
+	
+	/* UE Change Begin: Allow Metal to use the array<T> template to make arrays a value type */
+	/* UE Change Begin: Force the use of C style array declaration. */
+	string address_space = get_argument_address_space(var);
 	bool builtin = is_builtin_variable(var);
+	use_builtin_array = builtin;
+	if (address_space == "threadgroup")
+		use_builtin_array = true;
+
 	if (var.basevariable == stage_in_ptr_var_id || var.basevariable == stage_out_ptr_var_id)
 		decl += type_to_glsl(type, arg.id);
 	else if (builtin)
 		decl += builtin_type_decl(static_cast<BuiltIn>(get_decoration(arg.id, DecorationBuiltIn)));
 	else if ((storage == StorageClassUniform || storage == StorageClassStorageBuffer) && is_array(type))
-		decl += join(type_to_glsl(type, arg.id), "*");
+	{
+		auto new_type = type;
+		new_type.array.clear();
+		const auto &base_type = get<SPIRType>(var.basetype);
+		new_type.storage = base_type.storage;
+		decl += join("unsafe_array<" + address_space + " " + type_to_glsl(new_type) + "*," + convert_to_string(type.array[0]) + ">");
+		
+		address_space = "thread";
+		if (msl_options.argument_buffers)
+		{
+			uint32_t desc_set = get_decoration(name_id, DecorationDescriptorSet);
+			if ((storage == StorageClassUniform || storage == StorageClassStorageBuffer) &&
+				descriptor_set_is_argument_buffer(desc_set))
+			{
+				// An awkward case where we need to emit *more* address space declarations (yay!).
+				// An example is where we pass down an array of buffer pointers to leaf functions.
+				// It's a constant array containing pointers to constants.
+				// The pointer array is always constant however. E.g.
+				// device SSBO * constant (&array)[N].
+				// const device SSBO * constant (&array)[N].
+				// constant SSBO * constant (&array)[N].
+				// However, this only matters for argument buffers, since for MSL 1.0 style codegen,
+				// we emit the buffer array on stack instead, and that seems to work just fine apparently.
+				address_space = "constant";
+			}
+		}
+	}
 	else
 		decl += type_to_glsl(type, arg.id);
 
 	bool opaque_handle = storage == StorageClassUniformConstant;
-
-	string address_space = get_argument_address_space(var);
 
 	if (!builtin && !opaque_handle && !is_pointer &&
 	    (storage == StorageClassFunction || storage == StorageClassGeneric))
@@ -6453,25 +6488,6 @@ string CompilerMSL::argument_decl(const SPIRFunction::Parameter &arg)
 		if (!address_space.empty())
 			decl = join(address_space, " ", decl);
 
-		if (msl_options.argument_buffers)
-		{
-			uint32_t desc_set = get_decoration(name_id, DecorationDescriptorSet);
-			if ((storage == StorageClassUniform || storage == StorageClassStorageBuffer) &&
-			    descriptor_set_is_argument_buffer(desc_set))
-			{
-				// An awkward case where we need to emit *more* address space declarations (yay!).
-				// An example is where we pass down an array of buffer pointers to leaf functions.
-				// It's a constant array containing pointers to constants.
-				// The pointer array is always constant however. E.g.
-				// device SSBO * constant (&array)[N].
-				// const device SSBO * constant (&array)[N].
-				// constant SSBO * constant (&array)[N].
-				// However, this only matters for argument buffers, since for MSL 1.0 style codegen,
-				// we emit the buffer array on stack instead, and that seems to work just fine apparently.
-				decl += " constant";
-			}
-		}
-
 		decl += " (&";
 		decl += to_expression(name_id);
 		decl += ")";
@@ -6499,6 +6515,10 @@ string CompilerMSL::argument_decl(const SPIRFunction::Parameter &arg)
 		decl += " ";
 		decl += to_expression(name_id);
 	}
+
+	use_builtin_array = false;
+	/* UE Change End: Allow Metal to use the array<T> template to make arrays a value type */
+	/* UE Change End: Force the use of C style array declaration. */
 
 	return decl;
 }
@@ -6868,7 +6888,30 @@ string CompilerMSL::type_to_glsl(const SPIRType &type, uint32_t id)
 	// Pointer?
 	if (type.pointer)
 	{
-		type_name = join(get_type_address_space(type, id), " ", type_to_glsl(get<SPIRType>(type.parent_type), id));
+		/* UE Change Begin: Allow Metal to use the array<T> template to make arrays a value type */
+		/* UE Change Begin: Force the use of C style array declaration. */
+		if (use_builtin_array || type.array.size() == 0)
+		{
+			type_name = join(get_type_address_space(type, id), " ", type_to_glsl(get<SPIRType>(type.parent_type), id));
+		}
+		else
+		{
+			SPIRType new_type = get<SPIRType>(type.parent_type);
+			new_type.pointer = true;
+			new_type.array.clear();
+			
+			type_name = "unsafe_array<";
+			type_name += join(get_type_address_space(type, id), " ", type_to_glsl(new_type, id));
+			for (auto i = uint32_t(type.array.size()); i; i--)
+			{
+				type_name += ",";
+				type_name += to_array_size(type, i - 1);
+				type_name += ">";
+			}
+			return type_name;
+		}
+		/* UE Change End: Allow Metal to use the array<T> template to make arrays a value type */
+		/* UE Change End: Force the use of C style array declaration. */
 		switch (type.basetype)
 		{
 		case SPIRType::Image:
@@ -6888,7 +6931,10 @@ string CompilerMSL::type_to_glsl(const SPIRType &type, uint32_t id)
 	{
 	case SPIRType::Struct:
 		// Need OpName lookup here to get a "sensible" name for a struct.
-		return to_name(type.self);
+        /* UE Change Begin: Allow Metal to use the array<T> template to make arrays a value type */
+		type_name = to_name(type.self);
+		break;
+        /* UE Change End: Allow Metal to use the array<T> template to make arrays a value type */
 
 	case SPIRType::Image:
 	case SPIRType::SampledImage:
@@ -6957,8 +7003,98 @@ string CompilerMSL::type_to_glsl(const SPIRType &type, uint32_t id)
 	if (type.vecsize > 1)
 		type_name += to_string(type.vecsize);
 
-	return type_name;
+	/* UE Change Begin: Allow Metal to use the array<T> template to make arrays a value type */
+	if (type.array.empty())
+	{
+		return type_name;
+	}
+	else
+	{
+		if (use_builtin_array)
+		{
+			return type_name;
+		}
+		else if (options.flatten_multidimensional_arrays)
+		{
+			string res = "unsafe_array<";
+			res += type_name;
+			res += ",";
+			for (auto i = uint32_t(type.array.size()); i; i--)
+			{
+				res += enclose_expression(to_array_size(type, i - 1));
+				if (i > 1)
+					res += " * ";
+			}
+			res += ">";
+			return res;
+		}
+		else
+		{
+			if (type.array.size() > 1)
+			{
+				if (!options.es && options.version < 430)
+					require_extension_internal("GL_ARB_arrays_of_arrays");
+				else if (options.es && options.version < 310)
+					SPIRV_CROSS_THROW("Arrays of arrays not supported before ESSL version 310. "
+									  "Try using --flatten-multidimensional-arrays or set "
+									  "options.flatten_multidimensional_arrays to true.");
+			}
+			
+			string res;
+			string sizes;
+			for (auto i = uint32_t(type.array.size()); i; i--)
+			{
+				res += "unsafe_array<";
+				sizes += ",";
+				sizes += to_array_size(type, i - 1);
+				sizes += ">";
+			}
+			
+			res += type_name + sizes;
+			return res;
+		}
+	}
+	/* UE Change End: Allow Metal to use the array<T> template to make arrays a value type */
 }
+
+string CompilerMSL::type_to_array_glsl(const SPIRType &type)
+{
+	/* UE Change Begin: Allow Metal to use the array<T> template to make arrays a value type */
+	/* UE Change Begin: Force the use of C style array declaration. */
+	switch (type.basetype)
+	{
+		case SPIRType::AtomicCounter:
+		case SPIRType::ControlPointArray:
+		{
+			return CompilerGLSL::type_to_array_glsl(type);
+		}
+		default:
+		{
+			if (use_builtin_array)
+				return CompilerGLSL::type_to_array_glsl(type);
+			else
+				return "";
+		}
+	}
+	/* UE Change End: Force the use of C style array declaration. */
+	/* UE Change End: Allow Metal to use the array<T> template to make arrays a value type */
+}
+
+/* UE Change Begin: Threadgroup arrays can't have a wrapper type */
+std::string CompilerMSL::variable_decl(const SPIRVariable &variable)
+{
+	if (variable.storage == StorageClassWorkgroup)
+	{
+		use_builtin_array = true;
+	}
+	std::string expr = CompilerGLSL::variable_decl(variable);
+	if (variable.storage == StorageClassWorkgroup)
+	{
+		use_builtin_array = false;
+	}
+	return expr;
+}
+/* UE Change End: Threadgroup arrays can't have a wrapper type */
 
 std::string CompilerMSL::sampler_type(const SPIRType &type)
 {
@@ -7996,58 +8132,15 @@ CompilerMSL::SPVFuncImpl CompilerMSL::OpCodePreprocessor::get_spv_func_impl(Op o
 
 	case OpFunctionCall:
 	{
-		auto &return_type = compiler.get<SPIRType>(args[0]);
-		if (return_type.array.size() > 1)
-		{
-			if (return_type.array.size() > SPVFuncImplArrayCopyMultidimMax)
-				SPIRV_CROSS_THROW("Cannot support this many dimensions for arrays of arrays.");
-			return static_cast<SPVFuncImpl>(SPVFuncImplArrayCopyMultidimBase + return_type.array.size());
-		}
-		else if (return_type.array.size() > 0)
-			return SPVFuncImplArrayCopy;
-
+		/* UE Change Begin: Allow Metal to use the array<T> template to make arrays a value type */
+		/* UE Change End: Allow Metal to use the array<T> template to make arrays a value type */
 		break;
 	}
 
 	case OpStore:
 	{
-		// Get the result type of the RHS. Since this is run as a pre-processing stage,
-		// we must extract the result type directly from the Instruction, rather than the ID.
-		uint32_t id_lhs = args[0];
-		uint32_t id_rhs = args[1];
-
-		const SPIRType *type = nullptr;
-		if (compiler.ir.ids[id_rhs].get_type() != TypeNone)
-		{
-			// Could be a constant, or similar.
-			type = &compiler.expression_type(id_rhs);
-		}
-		else
-		{
-			// Or ... an expression.
-			uint32_t tid = result_types[id_rhs];
-			if (tid)
-				type = &compiler.get<SPIRType>(tid);
-		}
-
-		auto *var = compiler.maybe_get<SPIRVariable>(id_lhs);
-
-		// Are we simply assigning to a statically assigned variable which takes a constant?
-		// Don't bother emitting this function.
-		bool static_expression_lhs =
-		    var && var->storage == StorageClassFunction && var->statically_assigned && var->remapped_variable;
-		if (type && compiler.is_array(*type) && !static_expression_lhs)
-		{
-			if (type->array.size() > 1)
-			{
-				if (type->array.size() > SPVFuncImplArrayCopyMultidimMax)
-					SPIRV_CROSS_THROW("Cannot support this many dimensions for arrays of arrays.");
-				return static_cast<SPVFuncImpl>(SPVFuncImplArrayCopyMultidimBase + type->array.size());
-			}
-			else
-				return SPVFuncImplArrayCopy;
-		}
-
+        /* UE Change Begin: Allow Metal to use the array<T> template to make arrays a value type */
+        /* UE Change End: Allow Metal to use the array<T> template to make arrays a value type */
 		break;
 	}
 
@@ -8082,9 +8175,8 @@ CompilerMSL::SPVFuncImpl CompilerMSL::OpCodePreprocessor::get_spv_func_impl(Op o
 
 	case OpCompositeConstruct:
 	{
-		auto &type = compiler.get<SPIRType>(args[0]);
-		if (type.array.size() > 1) // We need to use copies to build the composite.
-			return static_cast<SPVFuncImpl>(SPVFuncImplArrayCopyMultidimBase + type.array.size() - 1);
+        /* UE Change Begin: Allow Metal to use the array<T> template to make arrays a value type */
+        /* UE Change End: Allow Metal to use the array<T> template to make arrays a value type */
 		break;
 	}
 
