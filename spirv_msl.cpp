@@ -4511,8 +4511,11 @@ void CompilerMSL::emit_barrier(uint32_t id_exe_scope, uint32_t id_mem_scope, uin
 		if (get_execution_model() == ExecutionModelTessellationControl ||
 		    (mem_sem & (MemorySemanticsUniformMemoryMask | MemorySemanticsCrossWorkgroupMemoryMask)))
 			mem_flags += "mem_flags::mem_device";
-		if (mem_sem & (MemorySemanticsSubgroupMemoryMask | MemorySemanticsWorkgroupMemoryMask |
-		               MemorySemanticsAtomicCounterMemoryMask))
+		/* UE Change Begin: Fix tessellation patch function processing */
+		if (get_execution_model() == ExecutionModelTessellationControl ||
+			(mem_sem & (MemorySemanticsSubgroupMemoryMask | MemorySemanticsWorkgroupMemoryMask |
+		               MemorySemanticsAtomicCounterMemoryMask)))
+		/* UE Change End: Fix tessellation patch function processing */
 		{
 			if (!mem_flags.empty())
 				mem_flags += " | ";
@@ -8704,6 +8707,43 @@ bool CompilerMSL::OpCodePreprocessor::handle(Op opcode, const uint32_t *args, ui
 		break;
 	}
 
+	/* UE Change Begin: Fix tessellation patch function processing */
+	case OpLoad:
+	{
+		if(compiler.get_execution_model() == ExecutionModelTessellationControl)
+		{
+			uint32_t id = args[1];
+			uint32_t ptr = args[2];
+			
+			uint32_t source_id = ptr;
+			auto *var = compiler.maybe_get_backing_variable(source_id);
+			if (var)
+				source_id = var->self;
+			
+			// Only interested in standalone builtin variables.
+			if (compiler.has_decoration(source_id, DecorationBuiltIn))
+			{
+				auto builtin = static_cast<BuiltIn>(compiler.get_decoration(source_id, DecorationBuiltIn));
+				switch (builtin)
+				{
+					case BuiltInInvocationId:
+						invocation_ids[id] = ptr;
+						break;
+					default:
+						break;
+				}
+			}
+		}
+		break;
+	}
+			
+	case OpControlBarrier:
+	{
+		passed_control_barrier = true;
+		break;
+	}
+	/* UE Change End: Fix tessellation patch function processing */
+			
 	case OpInBoundsAccessChain:
 	case OpAccessChain:
 	case OpPtrAccessChain:
@@ -8712,6 +8752,54 @@ bool CompilerMSL::OpCodePreprocessor::handle(Op opcode, const uint32_t *args, ui
 		uint32_t result_type = args[0];
 		uint32_t id = args[1];
 		uint32_t ptr = args[2];
+		
+		/* UE Change Begin: Fix tessellation patch function processing */
+		if(compiler.get_execution_model() == ExecutionModelTessellationControl)
+		{
+			uint32_t source_id = args[3];
+			bool isIndexedByInvocation = variables_indexed_by_invocation.find(ptr) != variables_indexed_by_invocation.end() || invocation_ids.find(source_id) != invocation_ids.end();
+			if (!isIndexedByInvocation)
+			{
+				auto *var = compiler.maybe_get_backing_variable(source_id);
+				if (var)
+					source_id = var->self;
+				
+				// Only interested in standalone builtin variables.
+				if (compiler.has_decoration(source_id, DecorationBuiltIn))
+				{
+					auto builtin = static_cast<BuiltIn>(compiler.get_decoration(source_id, DecorationBuiltIn));
+					switch (builtin)
+					{
+						case BuiltInInvocationId:
+							isIndexedByInvocation = true;
+							break;
+						default:
+							break;
+					}
+				}
+			}
+			
+			if (isIndexedByInvocation)
+			{
+				if (passed_control_barrier)
+				{
+					auto *var = compiler.maybe_get_backing_variable(ptr);
+					if (var)
+					{
+						auto* var_type = compiler.maybe_get<SPIRType>(var->basetype);
+						var_type->storage = StorageClassWorkgroup;
+						var->storage = StorageClassWorkgroup;
+						variables_indexed_by_invocation.erase(ptr);
+					}
+				}
+				else
+				{
+					variables_indexed_by_invocation.insert(ptr);
+				}
+			}
+		}
+		/* UE Change End: Fix tessellation patch function processing */
+		
 		compiler.set<SPIRExpression>(id, "", result_type, true);
 		compiler.register_read(id, ptr, true);
 		compiler.ir.ids[id].set_allow_type_rewrite();
@@ -8738,6 +8826,386 @@ void CompilerMSL::OpCodePreprocessor::check_resource_write(uint32_t var_id)
 	if (sc == StorageClassUniform || sc == StorageClassStorageBuffer)
 		uses_resource_write = true;
 }
+
+/* UE Change Begin: Fix loads from tessellation control inputs not being forwarded to the gl_in structure array */
+/* UE Change Begin: Fix loads from tessellation evaluation inputs not being forwarded to the stage_in structure array */
+std::string CompilerMSL::access_chain_internal(uint32_t base, const uint32_t *indices, uint32_t count, AccessChainFlags flags, AccessChainMeta *meta)
+{
+	std::string expr;
+	
+	bool index_is_literal = (flags & ACCESS_CHAIN_INDEX_IS_LITERAL_BIT) != 0;
+	bool chain_only = (flags & ACCESS_CHAIN_CHAIN_ONLY_BIT) != 0;
+	bool ptr_chain = (flags & ACCESS_CHAIN_PTR_CHAIN_BIT) != 0;
+	bool register_expression_read = (flags & ACCESS_CHAIN_SKIP_REGISTER_EXPRESSION_READ_BIT) == 0;
+	
+	if (!chain_only)
+		expr = to_enclosed_expression(base, register_expression_read);
+	
+	// Start traversing type hierarchy at the proper non-pointer types,
+	// but keep type_id referencing the original pointer for use below.
+	uint32_t type_id = expression_type_id(base);
+	
+	if (!backend.native_pointers)
+	{
+		if (ptr_chain)
+			SPIRV_CROSS_THROW("Backend does not support native pointers and does not support OpPtrAccessChain.");
+		
+		// Wrapped buffer reference pointer types will need to poke into the internal "value" member before
+		// continuing the access chain.
+		if (should_dereference(base))
+		{
+			auto &type = get<SPIRType>(type_id);
+			expr = dereference_expression(type, expr);
+		}
+	}
+	
+	const auto *type = &get_pointee_type(type_id);
+	
+	auto *var = maybe_get<SPIRVariable>(base);
+	const auto *var_type = var ? maybe_get<SPIRType>(var->basetype) : nullptr;
+	bool ssbo = msl_options.enforce_storge_buffer_bounds && var && var_type && (var->storage == StorageClassStorageBuffer || (var_type->basetype == SPIRType::Struct && var->storage == StorageClassUniform && has_decoration(var_type->self, DecorationBufferBlock)));
+	
+	bool access_chain_is_arrayed = expr.find_first_of('[') != string::npos;
+	bool row_major_matrix_needs_conversion = is_non_native_row_major_matrix(base);
+	bool is_packed = has_extended_decoration(base, SPIRVCrossDecorationPacked);
+	uint32_t packed_type = get_extended_decoration(base, SPIRVCrossDecorationPackedType);
+	bool is_invariant = has_decoration(base, DecorationInvariant);
+	bool pending_array_enclose = false;
+	bool dimension_flatten = false;
+	
+	auto* tess_var = maybe_get_backing_variable(base);
+	bool tess_control_input = (get_execution_model() == ExecutionModelTessellationControl && tess_var && tess_var->storage == StorageClassInput);
+	bool tess_eval_input = (get_execution_model() == ExecutionModelTessellationEvaluation && tess_var && tess_var->storage == StorageClassInput && expr.find("gl_in") == string::npos) && expr != "gl_TessLevelInner" && expr != "gl_TessLevelOuter";
+	bool tess_eval_input_array = (get_execution_model() == ExecutionModelTessellationEvaluation && access_chain_is_arrayed && expr.find("gl_in[") != string::npos);
+    /* UE Change Begin: Workaround SPIRV losing an array indirection in tessellation shaders - not the best solution but enough to keep things progressing. */
+	bool tess_control_input_array = ((get_execution_model() == ExecutionModelTessellationControl || get_execution_model() == ExecutionModelTessellationEvaluation) && type->array.size() == 2 && type->array[0] >= 1);
+	uint32_t tess_control_input_array_num = type->array[0];
+	
+	bool tess_eval_input_array_deref = type && tess_eval_input_array && expr.find("({") == 0;
+	if (tess_eval_input_array_deref)
+	{
+		expr = type_to_glsl(*type) + expr;
+	}
+	
+	const auto append_index = [&](uint32_t index) {
+		std::string name;
+		
+		if (tess_control_input) {
+			name = expr;
+			expr = "gl_in";
+		}
+		else if (tess_eval_input && !tess_eval_input_array) {
+			name = expr;
+			expr = to_expression(patch_stage_in_var_id) + ".gl_in";
+		}
+		
+		expr += "[";
+		
+		// If we are indexing into an array of SSBOs or UBOs, we need to index it with a non-uniform qualifier.
+		bool nonuniform_index =
+		has_decoration(index, DecorationNonUniformEXT) &&
+		(has_decoration(type->self, DecorationBlock) || has_decoration(type->self, DecorationBufferBlock));
+		if (nonuniform_index)
+		{
+			expr += backend.nonuniform_qualifier;
+			expr += "(";
+		}
+		
+		if (index_is_literal)
+			expr += convert_to_string(index);
+		else
+			expr += to_expression(index, register_expression_read);
+		
+		if (nonuniform_index)
+			expr += ")";
+		
+		if (ssbo)
+		{
+			expr += ")";
+			ssbo = false;
+		}
+		
+		expr += "]";
+		if (tess_eval_input_array)
+		{
+			tess_eval_input_array = false;
+		}
+		
+		if (tess_control_input || tess_eval_input)
+		{
+			expr += ".";
+			expr += name;
+			tess_control_input = false;
+			tess_eval_input = false;
+			
+			if (tess_control_input_array)
+			{
+				name = expr;
+				expr = "{ ";
+				for (uint32_t i = 0; i < tess_control_input_array_num; i++) {
+					if (i > 0)
+						expr += ", ";
+						
+					expr += name;
+					expr += "_";
+					expr += convert_to_string(i);
+				}
+				expr += " }";
+			}
+		}
+	};
+    /* UE Change End: Workaround SPIRV losing an array indirection in tessellation shaders - not the best solution but enough to keep things progressing. */
+	
+	for (uint32_t i = 0; i < count; i++)
+	{
+		uint32_t index = indices[i];
+		
+		// Pointer chains
+		if (ptr_chain && i == 0)
+		{
+			// If we are flattening multidimensional arrays, only create opening bracket on first
+			// array index.
+			if (options.flatten_multidimensional_arrays)
+			{
+				dimension_flatten = type->array.size() >= 1;
+				pending_array_enclose = dimension_flatten;
+				if (pending_array_enclose)
+					expr += "[";
+			}
+			
+			if (options.flatten_multidimensional_arrays && dimension_flatten)
+			{
+				// If we are flattening multidimensional arrays, do manual stride computation.
+				if (index_is_literal)
+					expr += convert_to_string(index);
+				else
+					expr += to_enclosed_expression(index, register_expression_read);
+				
+				for (auto j = uint32_t(type->array.size()); j; j--)
+				{
+					expr += " * ";
+					expr += enclose_expression(to_array_size(*type, j - 1));
+				}
+				
+				if (type->array.empty())
+					pending_array_enclose = false;
+				else
+					expr += " + ";
+				
+				if (!pending_array_enclose)
+					expr += "]";
+			}
+			else
+			{
+				append_index(index);
+			}
+			
+			if (type->basetype == SPIRType::ControlPointArray)
+			{
+				type_id = type->parent_type;
+				type = &get<SPIRType>(type_id);
+			}
+			
+			access_chain_is_arrayed = true;
+		}
+		// Arrays
+		else if (!type->array.empty())
+		{
+			// If we are flattening multidimensional arrays, only create opening bracket on first
+			// array index.
+			if (options.flatten_multidimensional_arrays && !pending_array_enclose)
+			{
+				dimension_flatten = type->array.size() > 1;
+				pending_array_enclose = dimension_flatten;
+				if (pending_array_enclose)
+					expr += "[";
+			}
+			
+			assert(type->parent_type);
+			
+			if (backend.force_gl_in_out_block && i == 0 && var && is_builtin_variable(*var) &&
+				!has_decoration(type->self, DecorationBlock))
+			{
+				// This deals with scenarios for tesc/geom where arrays of gl_Position[] are declared.
+				// Normally, these variables live in blocks when compiled from GLSL,
+				// but HLSL seems to just emit straight arrays here.
+				// We must pretend this access goes through gl_in/gl_out arrays
+				// to be able to access certain builtins as arrays.
+				auto builtin = ir.meta[base].decoration.builtin_type;
+				switch (builtin)
+				{
+						// case BuiltInCullDistance: // These are already arrays, need to figure out rules for these in tess/geom.
+						// case BuiltInClipDistance:
+					case BuiltInPosition:
+					case BuiltInPointSize:
+						if (var->storage == StorageClassInput)
+							expr = join("gl_in[", to_expression(index, register_expression_read), "].", expr);
+						else if (var->storage == StorageClassOutput)
+							expr = join("gl_out[", to_expression(index, register_expression_read), "].", expr);
+						else
+							append_index(index);
+						break;
+						
+					default:
+						append_index(index);
+						break;
+				}
+			}
+			else if (options.flatten_multidimensional_arrays && dimension_flatten)
+			{
+				// If we are flattening multidimensional arrays, do manual stride computation.
+				auto &parent_type = get<SPIRType>(type->parent_type);
+				
+				if (index_is_literal)
+					expr += convert_to_string(index);
+				else
+					expr += to_enclosed_expression(index, register_expression_read);
+				
+				for (auto j = uint32_t(parent_type.array.size()); j; j--)
+				{
+					expr += " * ";
+					expr += enclose_expression(to_array_size(parent_type, j - 1));
+				}
+				
+				if (parent_type.array.empty())
+					pending_array_enclose = false;
+				else
+					expr += " + ";
+				
+				if (!pending_array_enclose)
+					expr += "]";
+			}
+			else
+            {
+				append_index(index);
+			}
+			
+			type_id = type->parent_type;
+			type = &get<SPIRType>(type_id);
+			
+			access_chain_is_arrayed = true;
+		}
+		// For structs, the index refers to a constant, which indexes into the members.
+		// We also check if this member is a builtin, since we then replace the entire expression with the builtin one.
+		else if (type->basetype == SPIRType::Struct)
+		{
+			if (!index_is_literal)
+				index = get<SPIRConstant>(index).scalar();
+			
+			if (index >= type->member_types.size())
+				SPIRV_CROSS_THROW("Member index is out of bounds!");
+			
+			BuiltIn builtin;
+			if (is_member_builtin(*type, index, &builtin))
+			{
+				// FIXME: We rely here on OpName on gl_in/gl_out to make this work properly.
+				// To make this properly work by omitting all OpName opcodes,
+				// we need to infer gl_in or gl_out based on the builtin, and stage.
+				if (access_chain_is_arrayed)
+				{
+					expr += ".";
+					expr += builtin_to_glsl(builtin, type->storage);
+				}
+				else
+					expr = builtin_to_glsl(builtin, type->storage);
+			}
+			else
+			{
+				// If the member has a qualified name, use it as the entire chain
+				string qual_mbr_name = get_member_qualified_name(type_id, index);
+				if (!qual_mbr_name.empty())
+					expr = qual_mbr_name;
+				else
+					expr += to_member_reference(base, *type, index, ptr_chain);
+			}
+			
+			if (has_member_decoration(type->self, index, DecorationInvariant))
+				is_invariant = true;
+			
+			is_packed = member_is_packed_type(*type, index);
+			if (is_packed)
+				packed_type = get_extended_member_decoration(type->self, index, SPIRVCrossDecorationPackedType);
+			else
+				packed_type = 0;
+			
+			row_major_matrix_needs_conversion = member_is_non_native_row_major_matrix(*type, index);
+			type = &get<SPIRType>(type->member_types[index]);
+		}
+		// Matrix -> Vector
+		else if (type->columns > 1)
+		{
+			if (row_major_matrix_needs_conversion)
+			{
+				expr = convert_row_major_matrix(expr, *type, is_packed);
+				row_major_matrix_needs_conversion = false;
+				is_packed = false;
+				packed_type = 0;
+			}
+			
+			expr += "[";
+			if (index_is_literal)
+				expr += convert_to_string(index);
+			else
+				expr += to_expression(index, register_expression_read);
+			expr += "]";
+			
+			type_id = type->parent_type;
+			type = &get<SPIRType>(type_id);
+		}
+		// Vector -> Scalar
+		else if (type->vecsize > 1)
+		{
+			if (index_is_literal && !is_packed)
+			{
+				expr += ".";
+				expr += index_to_swizzle(index);
+			}
+			else if (ir.ids[index].get_type() == TypeConstant && !is_packed)
+			{
+				auto &c = get<SPIRConstant>(index);
+				expr += ".";
+				expr += index_to_swizzle(c.scalar());
+			}
+			else if (index_is_literal)
+			{
+				// For packed vectors, we can only access them as an array, not by swizzle.
+				expr += join("[", index, "]");
+			}
+			else
+			{
+				expr += "[";
+				expr += to_expression(index, register_expression_read);
+				expr += "]";
+			}
+			
+			is_packed = false;
+			packed_type = 0;
+			type_id = type->parent_type;
+			type = &get<SPIRType>(type_id);
+		}
+		else if (!backend.allow_truncated_access_chain)
+			SPIRV_CROSS_THROW("Cannot subdivide a scalar value!");
+	}
+	
+	if (pending_array_enclose)
+	{
+		SPIRV_CROSS_THROW("Flattening of multidimensional arrays were enabled, "
+						  "but the access chain was terminated in the middle of a multidimensional array. "
+						  "This is not supported.");
+	}
+	
+	if (meta)
+	{
+		meta->need_transpose = row_major_matrix_needs_conversion;
+		meta->storage_is_packed = is_packed;
+		meta->storage_is_invariant = is_invariant;
+		meta->storage_packed_type = packed_type;
+	}
+	
+	return expr;
+}
+/* UE Change End: Fix loads from tessellation evaluation inputs not being forwarded to the stage_in structure array */
+/* UE Change End: Fix loads from tessellation control inputs not being forwarded to the gl_in structure array */
 
 // Returns an enumeration of a SPIR-V function that needs to be output for certain Op codes.
 CompilerMSL::SPVFuncImpl CompilerMSL::OpCodePreprocessor::get_spv_func_impl(Op opcode, const uint32_t *args)
