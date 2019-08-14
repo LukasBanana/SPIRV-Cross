@@ -1,7 +1,63 @@
 #pragma clang diagnostic ignored "-Wmissing-prototypes"
+#pragma clang diagnostic ignored "-Wmissing-braces"
+#pragma clang diagnostic ignored "-Wunused-variable"
 
 #include <metal_stdlib>
 #include <simd/simd.h>
+	
+template <typename T, size_t Num>
+struct unsafe_array
+{
+	T __Elements[Num ? Num : 1];
+	
+	constexpr size_t size() const thread { return Num; }
+	constexpr size_t max_size() const thread { return Num; }
+	constexpr bool empty() const thread { return Num == 0; }
+	
+	constexpr size_t size() const device { return Num; }
+	constexpr size_t max_size() const device { return Num; }
+	constexpr bool empty() const device { return Num == 0; }
+	
+	constexpr size_t size() const constant { return Num; }
+	constexpr size_t max_size() const constant { return Num; }
+	constexpr bool empty() const constant { return Num == 0; }
+	
+	constexpr size_t size() const threadgroup { return Num; }
+	constexpr size_t max_size() const threadgroup { return Num; }
+	constexpr bool empty() const threadgroup { return Num == 0; }
+	
+	thread T &operator[](size_t pos) thread
+	{
+		return __Elements[pos];
+	}
+	constexpr const thread T &operator[](size_t pos) const thread
+	{
+		return __Elements[pos];
+	}
+	
+	device T &operator[](size_t pos) device
+	{
+		return __Elements[pos];
+	}
+	constexpr const device T &operator[](size_t pos) const device
+	{
+		return __Elements[pos];
+	}
+	
+	constexpr const constant T &operator[](size_t pos) const constant
+	{
+		return __Elements[pos];
+	}
+	
+	threadgroup T &operator[](size_t pos) threadgroup
+	{
+		return __Elements[pos];
+	}
+	constexpr const threadgroup T &operator[](size_t pos) const threadgroup
+	{
+		return __Elements[pos];
+	}
+};
 
 using namespace metal;
 
@@ -10,8 +66,6 @@ struct myType
     float data;
 };
 
-constant myType _21[5] = { myType{ 0.0 }, myType{ 1.0 }, myType{ 0.0 }, myType{ 1.0 }, myType{ 0.0 } };
-
 struct main0_out
 {
     float4 o_color [[color(0)]];
@@ -19,26 +73,16 @@ struct main0_out
 
 // Implementation of the GLSL mod() function, which is slightly different than Metal fmod()
 template<typename Tx, typename Ty>
+static inline __attribute__((always_inline))
 Tx mod(Tx x, Ty y)
 {
     return x - y * floor(x / y);
 }
 
-// Implementation of an array copy function to cover GLSL's ability to copy an array via assignment.
-template<typename T, uint N>
-void spvArrayCopyFromStack1(thread T (&dst)[N], thread const T (&src)[N])
-{
-    for (uint i = 0; i < N; dst[i] = src[i], i++);
-}
-
-template<typename T, uint N>
-void spvArrayCopyFromConstant1(thread T (&dst)[N], constant T (&src)[N])
-{
-    for (uint i = 0; i < N; dst[i] = src[i], i++);
-}
-
 fragment main0_out main0(float4 gl_FragCoord [[position]])
 {
+    unsafe_array<myType,5> _21 = unsafe_array<myType,5>({ myType{ 0.0 }, myType{ 1.0 }, myType{ 0.0 }, myType{ 1.0 }, myType{ 0.0 } });
+    
     main0_out out = {};
     float2 uv = gl_FragCoord.xy;
     int index = int(mod(uv.x, 4.0));

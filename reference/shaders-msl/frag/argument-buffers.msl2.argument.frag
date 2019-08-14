@@ -1,7 +1,63 @@
 #pragma clang diagnostic ignored "-Wmissing-prototypes"
+#pragma clang diagnostic ignored "-Wmissing-braces"
+#pragma clang diagnostic ignored "-Wunused-variable"
 
 #include <metal_stdlib>
 #include <simd/simd.h>
+	
+template <typename T, size_t Num>
+struct unsafe_array
+{
+	T __Elements[Num ? Num : 1];
+	
+	constexpr size_t size() const thread { return Num; }
+	constexpr size_t max_size() const thread { return Num; }
+	constexpr bool empty() const thread { return Num == 0; }
+	
+	constexpr size_t size() const device { return Num; }
+	constexpr size_t max_size() const device { return Num; }
+	constexpr bool empty() const device { return Num == 0; }
+	
+	constexpr size_t size() const constant { return Num; }
+	constexpr size_t max_size() const constant { return Num; }
+	constexpr bool empty() const constant { return Num == 0; }
+	
+	constexpr size_t size() const threadgroup { return Num; }
+	constexpr size_t max_size() const threadgroup { return Num; }
+	constexpr bool empty() const threadgroup { return Num == 0; }
+	
+	thread T &operator[](size_t pos) thread
+	{
+		return __Elements[pos];
+	}
+	constexpr const thread T &operator[](size_t pos) const thread
+	{
+		return __Elements[pos];
+	}
+	
+	device T &operator[](size_t pos) device
+	{
+		return __Elements[pos];
+	}
+	constexpr const device T &operator[](size_t pos) const device
+	{
+		return __Elements[pos];
+	}
+	
+	constexpr const constant T &operator[](size_t pos) const constant
+	{
+		return __Elements[pos];
+	}
+	
+	threadgroup T &operator[](size_t pos) threadgroup
+	{
+		return __Elements[pos];
+	}
+	constexpr const threadgroup T &operator[](size_t pos) const threadgroup
+	{
+		return __Elements[pos];
+	}
+};
 
 using namespace metal;
 
@@ -43,13 +99,13 @@ struct spvDescriptorSetBuffer1
 {
     array<texture2d<float>, 4> uTexture2 [[id(3)]];
     device SSBO* v_60 [[id(7)]];
-    const device SSBOs* ssbos [[id(8)]][2];
+    unsafe_array<const device thread SSBOs*,2> ssbos [[id(8)]];
     array<sampler, 2> uSampler [[id(10)]];
 };
 
 struct spvDescriptorSetBuffer2
 {
-    constant UBOs* ubos [[id(4)]][4];
+    unsafe_array<constant thread UBOs*,4> ubos [[id(4)]];
 };
 
 struct main0_out
@@ -62,7 +118,8 @@ struct main0_in
     float2 vUV [[user(locn0)]];
 };
 
-float4 sample_in_function2(thread texture2d<float> uTexture, thread const sampler uTextureSmplr, thread float2& vUV, thread const array<texture2d<float>, 4> uTexture2, thread const array<sampler, 2> uSampler, thread const array<texture2d<float>, 2> uTextures, thread const array<sampler, 2> uTexturesSmplr, device SSBO& v_60, const device SSBOs* constant (&ssbos)[2], constant Push& registers)
+static inline __attribute__((always_inline))
+float4 sample_in_function2(thread texture2d<float> uTexture, thread const sampler uTextureSmplr, thread float2& vUV, thread const array<texture2d<float>, 4> uTexture2, thread const array<sampler, 2> uSampler, thread const array<texture2d<float>, 2> uTextures, thread const array<sampler, 2> uTexturesSmplr, device SSBO& v_60, constant unsafe_array<const device SSBOs*,2> (&ssbos), constant Push& registers)
 {
     float4 ret = uTexture.sample(uTextureSmplr, vUV);
     ret += uTexture2[2].sample(uSampler[1], vUV);
@@ -73,7 +130,8 @@ float4 sample_in_function2(thread texture2d<float> uTexture, thread const sample
     return ret;
 }
 
-float4 sample_in_function(thread texture2d<float> uTexture, thread const sampler uTextureSmplr, thread float2& vUV, thread const array<texture2d<float>, 4> uTexture2, thread const array<sampler, 2> uSampler, thread const array<texture2d<float>, 2> uTextures, thread const array<sampler, 2> uTexturesSmplr, device SSBO& v_60, const device SSBOs* constant (&ssbos)[2], constant Push& registers, constant UBO& v_90, constant UBOs* constant (&ubos)[4])
+static inline __attribute__((always_inline))
+float4 sample_in_function(thread texture2d<float> uTexture, thread const sampler uTextureSmplr, thread float2& vUV, thread const array<texture2d<float>, 4> uTexture2, thread const array<sampler, 2> uSampler, thread const array<texture2d<float>, 2> uTextures, thread const array<sampler, 2> uTexturesSmplr, device SSBO& v_60, constant unsafe_array<const device SSBOs*,2> (&ssbos), constant Push& registers, constant UBO& v_90, constant unsafe_array<constant UBOs*,4> (&ubos))
 {
     float4 ret = sample_in_function2(uTexture, uTextureSmplr, vUV, uTexture2, uSampler, uTextures, uTexturesSmplr, v_60, ssbos, registers);
     ret += v_90.ubo;

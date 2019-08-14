@@ -1,30 +1,86 @@
 #pragma clang diagnostic ignored "-Wmissing-prototypes"
+#pragma clang diagnostic ignored "-Wmissing-braces"
+#pragma clang diagnostic ignored "-Wunused-variable"
 
 #include <metal_stdlib>
 #include <simd/simd.h>
+	
+template <typename T, size_t Num>
+struct unsafe_array
+{
+	T __Elements[Num ? Num : 1];
+	
+	constexpr size_t size() const thread { return Num; }
+	constexpr size_t max_size() const thread { return Num; }
+	constexpr bool empty() const thread { return Num == 0; }
+	
+	constexpr size_t size() const device { return Num; }
+	constexpr size_t max_size() const device { return Num; }
+	constexpr bool empty() const device { return Num == 0; }
+	
+	constexpr size_t size() const constant { return Num; }
+	constexpr size_t max_size() const constant { return Num; }
+	constexpr bool empty() const constant { return Num == 0; }
+	
+	constexpr size_t size() const threadgroup { return Num; }
+	constexpr size_t max_size() const threadgroup { return Num; }
+	constexpr bool empty() const threadgroup { return Num == 0; }
+	
+	thread T &operator[](size_t pos) thread
+	{
+		return __Elements[pos];
+	}
+	constexpr const thread T &operator[](size_t pos) const thread
+	{
+		return __Elements[pos];
+	}
+	
+	device T &operator[](size_t pos) device
+	{
+		return __Elements[pos];
+	}
+	constexpr const device T &operator[](size_t pos) const device
+	{
+		return __Elements[pos];
+	}
+	
+	constexpr const constant T &operator[](size_t pos) const constant
+	{
+		return __Elements[pos];
+	}
+	
+	threadgroup T &operator[](size_t pos) threadgroup
+	{
+		return __Elements[pos];
+	}
+	constexpr const threadgroup T &operator[](size_t pos) const threadgroup
+	{
+		return __Elements[pos];
+	}
+};
 
 using namespace metal;
 
 struct SSBO
 {
     uint size;
-    float4 v[1];
+    unsafe_array<float4,1> v;
 };
 
 struct SSBO1
 {
-    float bz[1];
+    unsafe_array<float,1> bz;
 };
 
 struct SSBO2
 {
     uint size2;
-    float4 w[1];
+    unsafe_array<float4,1> w;
 };
 
 struct SSBO3
 {
-    float bz[1];
+    unsafe_array<float,1> bz;
 };
 
 struct spvDescriptorSetBuffer0
@@ -35,11 +91,12 @@ struct spvDescriptorSetBuffer0
 
 struct spvDescriptorSetBuffer1
 {
-    constant uint* spvBufferSizeConstants [[id(1)]];
-    device SSBO1* ssbos [[id(2)]][2];
+    constant uint* spvBufferSizeConstants [[id(0)]];
+    unsafe_array<device thread SSBO1*,2> ssbos [[id(2)]];
 };
 
-uint get_size(device SSBO& v_16, constant uint& v_16BufferSize, device SSBO1* constant (&ssbos)[2], constant uint* ssbosBufferSize, device SSBO2& v_38, constant uint& v_38BufferSize, device SSBO3* (&ssbos2)[2], constant uint* ssbos2BufferSize)
+static inline __attribute__((always_inline))
+uint get_size(device SSBO& v_16, constant uint& v_16BufferSize, constant unsafe_array<device SSBO1*,2> (&ssbos), constant uint* ssbosBufferSize, device SSBO2& v_38, constant uint& v_38BufferSize, thread unsafe_array<device SSBO3*,2> (&ssbos2), constant uint* ssbos2BufferSize)
 {
     uint len = uint(int((v_16BufferSize - 16) / 16));
     len += uint(int((ssbosBufferSize[1] - 0) / 4));
@@ -50,7 +107,7 @@ uint get_size(device SSBO& v_16, constant uint& v_16BufferSize, device SSBO1* co
 
 kernel void main0(constant spvDescriptorSetBuffer0& spvDescriptorSet0 [[buffer(0)]], constant spvDescriptorSetBuffer1& spvDescriptorSet1 [[buffer(1)]], constant uint* spvBufferSizeConstants [[buffer(25)]], device SSBO3* ssbos2_0 [[buffer(2)]], device SSBO3* ssbos2_1 [[buffer(3)]], device SSBO2& v_38 [[buffer(5)]])
 {
-    device SSBO3* ssbos2[] =
+    unsafe_array<device SSBO3*,2> ssbos2 =
     {
         ssbos2_0,
         ssbos2_1,

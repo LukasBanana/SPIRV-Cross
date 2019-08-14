@@ -1,7 +1,63 @@
 #pragma clang diagnostic ignored "-Wmissing-prototypes"
+#pragma clang diagnostic ignored "-Wmissing-braces"
+#pragma clang diagnostic ignored "-Wunused-variable"
 
 #include <metal_stdlib>
 #include <simd/simd.h>
+	
+template <typename T, size_t Num>
+struct unsafe_array
+{
+	T __Elements[Num ? Num : 1];
+	
+	constexpr size_t size() const thread { return Num; }
+	constexpr size_t max_size() const thread { return Num; }
+	constexpr bool empty() const thread { return Num == 0; }
+	
+	constexpr size_t size() const device { return Num; }
+	constexpr size_t max_size() const device { return Num; }
+	constexpr bool empty() const device { return Num == 0; }
+	
+	constexpr size_t size() const constant { return Num; }
+	constexpr size_t max_size() const constant { return Num; }
+	constexpr bool empty() const constant { return Num == 0; }
+	
+	constexpr size_t size() const threadgroup { return Num; }
+	constexpr size_t max_size() const threadgroup { return Num; }
+	constexpr bool empty() const threadgroup { return Num == 0; }
+	
+	thread T &operator[](size_t pos) thread
+	{
+		return __Elements[pos];
+	}
+	constexpr const thread T &operator[](size_t pos) const thread
+	{
+		return __Elements[pos];
+	}
+	
+	device T &operator[](size_t pos) device
+	{
+		return __Elements[pos];
+	}
+	constexpr const device T &operator[](size_t pos) const device
+	{
+		return __Elements[pos];
+	}
+	
+	constexpr const constant T &operator[](size_t pos) const constant
+	{
+		return __Elements[pos];
+	}
+	
+	threadgroup T &operator[](size_t pos) threadgroup
+	{
+		return __Elements[pos];
+	}
+	constexpr const threadgroup T &operator[](size_t pos) const threadgroup
+	{
+		return __Elements[pos];
+	}
+};
 
 using namespace metal;
 
@@ -19,12 +75,12 @@ struct VertexBuffer
 {
     float4x4 scale_offset_mat;
     uint vertex_base_index;
-    int4 input_attributes[16];
+    unsafe_array<int4,16> input_attributes;
 };
 
 struct VertexConstantsBuffer
 {
-    float4 vc[16];
+    unsafe_array<float4,16> vc;
 };
 
 constant float4 _295 = {};
@@ -37,11 +93,13 @@ struct main0_out
 };
 
 // Returns 2D texture coords corresponding to 1D texel buffer coords
+static inline __attribute__((always_inline))
 uint2 spvTexelBufferCoord(uint tc)
 {
     return uint2(tc % 4096, tc / 4096);
 }
 
+static inline __attribute__((always_inline))
 attr_desc fetch_desc(thread const int& location, constant VertexBuffer& v_227)
 {
     int attribute_flags = v_227.input_attributes[location].w;
@@ -55,6 +113,7 @@ attr_desc fetch_desc(thread const int& location, constant VertexBuffer& v_227)
     return result;
 }
 
+static inline __attribute__((always_inline))
 uint get_bits(thread const uint4& v, thread const int& swap)
 {
     if (swap != 0)
@@ -64,6 +123,7 @@ uint get_bits(thread const uint4& v, thread const int& swap)
     return ((v.x | (v.y << uint(8))) | (v.z << uint(16))) | (v.w << uint(24));
 }
 
+static inline __attribute__((always_inline))
 float4 fetch_attr(thread const attr_desc& desc, thread const int& vertex_id, thread const texture2d<uint> input_stream)
 {
     float4 result = float4(0.0, 0.0, 0.0, 1.0);
@@ -132,6 +192,7 @@ float4 fetch_attr(thread const attr_desc& desc, thread const int& vertex_id, thr
     return _210;
 }
 
+static inline __attribute__((always_inline))
 float4 read_location(thread const int& location, constant VertexBuffer& v_227, thread uint& gl_VertexIndex, thread texture2d<uint> buff_in_2, thread texture2d<uint> buff_in_1)
 {
     int param = location;
@@ -151,6 +212,7 @@ float4 read_location(thread const int& location, constant VertexBuffer& v_227, t
     }
 }
 
+static inline __attribute__((always_inline))
 void vs_adjust(thread float4& dst_reg0, thread float4& dst_reg1, thread float4& dst_reg7, constant VertexBuffer& v_227, thread uint& gl_VertexIndex, thread texture2d<uint> buff_in_2, thread texture2d<uint> buff_in_1, constant VertexConstantsBuffer& v_309)
 {
     int param = 3;

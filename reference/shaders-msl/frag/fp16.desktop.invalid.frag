@@ -1,7 +1,63 @@
 #pragma clang diagnostic ignored "-Wmissing-prototypes"
+#pragma clang diagnostic ignored "-Wmissing-braces"
+#pragma clang diagnostic ignored "-Wunused-variable"
 
 #include <metal_stdlib>
 #include <simd/simd.h>
+	
+template <typename T, size_t Num>
+struct unsafe_array
+{
+	T __Elements[Num ? Num : 1];
+	
+	constexpr size_t size() const thread { return Num; }
+	constexpr size_t max_size() const thread { return Num; }
+	constexpr bool empty() const thread { return Num == 0; }
+	
+	constexpr size_t size() const device { return Num; }
+	constexpr size_t max_size() const device { return Num; }
+	constexpr bool empty() const device { return Num == 0; }
+	
+	constexpr size_t size() const constant { return Num; }
+	constexpr size_t max_size() const constant { return Num; }
+	constexpr bool empty() const constant { return Num == 0; }
+	
+	constexpr size_t size() const threadgroup { return Num; }
+	constexpr size_t max_size() const threadgroup { return Num; }
+	constexpr bool empty() const threadgroup { return Num == 0; }
+	
+	thread T &operator[](size_t pos) thread
+	{
+		return __Elements[pos];
+	}
+	constexpr const thread T &operator[](size_t pos) const thread
+	{
+		return __Elements[pos];
+	}
+	
+	device T &operator[](size_t pos) device
+	{
+		return __Elements[pos];
+	}
+	constexpr const device T &operator[](size_t pos) const device
+	{
+		return __Elements[pos];
+	}
+	
+	constexpr const constant T &operator[](size_t pos) const constant
+	{
+		return __Elements[pos];
+	}
+	
+	threadgroup T &operator[](size_t pos) threadgroup
+	{
+		return __Elements[pos];
+	}
+	constexpr const threadgroup T &operator[](size_t pos) const threadgroup
+	{
+		return __Elements[pos];
+	}
+};
 
 using namespace metal;
 
@@ -21,6 +77,7 @@ struct main0_in
 
 // Implementation of the GLSL mod() function, which is slightly different than Metal fmod()
 template<typename Tx, typename Ty>
+static inline __attribute__((always_inline))
 Tx mod(Tx x, Ty y)
 {
     return x - y * floor(x / y);
@@ -28,6 +85,7 @@ Tx mod(Tx x, Ty y)
 
 // Implementation of the GLSL radians() function
 template<typename T>
+static inline __attribute__((always_inline))
 T radians(T d)
 {
     return d * T(0.01745329251);
@@ -35,21 +93,25 @@ T radians(T d)
 
 // Implementation of the GLSL degrees() function
 template<typename T>
+static inline __attribute__((always_inline))
 T degrees(T r)
 {
     return r * T(57.2957795131);
 }
 
+static inline __attribute__((always_inline))
 half2x2 test_mat2(thread const half2& a, thread const half2& b, thread const half2& c, thread const half2& d)
 {
     return half2x2(half2(a), half2(b)) * half2x2(half2(c), half2(d));
 }
 
+static inline __attribute__((always_inline))
 half3x3 test_mat3(thread const half3& a, thread const half3& b, thread const half3& c, thread const half3& d, thread const half3& e, thread const half3& f)
 {
     return half3x3(half3(a), half3(b), half3(c)) * half3x3(half3(d), half3(e), half3(f));
 }
 
+static inline __attribute__((always_inline))
 void test_constants()
 {
     half a = half(1.0);
@@ -62,11 +124,13 @@ void test_constants()
     half h = half(9.5367431640625e-07);
 }
 
+static inline __attribute__((always_inline))
 half test_result()
 {
     return half(1.0);
 }
 
+static inline __attribute__((always_inline))
 void test_conversions()
 {
     half one = test_result();
@@ -80,6 +144,7 @@ void test_conversions()
     half d2 = half(d);
 }
 
+static inline __attribute__((always_inline))
 void test_builtins(thread half4& v4, thread half3& v3, thread half& v1)
 {
     half4 res = radians(v4);

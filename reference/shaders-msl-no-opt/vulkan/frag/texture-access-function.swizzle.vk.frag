@@ -1,7 +1,63 @@
 #pragma clang diagnostic ignored "-Wmissing-prototypes"
+#pragma clang diagnostic ignored "-Wmissing-braces"
+#pragma clang diagnostic ignored "-Wunused-variable"
 
 #include <metal_stdlib>
 #include <simd/simd.h>
+	
+template <typename T, size_t Num>
+struct unsafe_array
+{
+	T __Elements[Num ? Num : 1];
+	
+	constexpr size_t size() const thread { return Num; }
+	constexpr size_t max_size() const thread { return Num; }
+	constexpr bool empty() const thread { return Num == 0; }
+	
+	constexpr size_t size() const device { return Num; }
+	constexpr size_t max_size() const device { return Num; }
+	constexpr bool empty() const device { return Num == 0; }
+	
+	constexpr size_t size() const constant { return Num; }
+	constexpr size_t max_size() const constant { return Num; }
+	constexpr bool empty() const constant { return Num == 0; }
+	
+	constexpr size_t size() const threadgroup { return Num; }
+	constexpr size_t max_size() const threadgroup { return Num; }
+	constexpr bool empty() const threadgroup { return Num == 0; }
+	
+	thread T &operator[](size_t pos) thread
+	{
+		return __Elements[pos];
+	}
+	constexpr const thread T &operator[](size_t pos) const thread
+	{
+		return __Elements[pos];
+	}
+	
+	device T &operator[](size_t pos) device
+	{
+		return __Elements[pos];
+	}
+	constexpr const device T &operator[](size_t pos) const device
+	{
+		return __Elements[pos];
+	}
+	
+	constexpr const constant T &operator[](size_t pos) const constant
+	{
+		return __Elements[pos];
+	}
+	
+	threadgroup T &operator[](size_t pos) threadgroup
+	{
+		return __Elements[pos];
+	}
+	constexpr const threadgroup T &operator[](size_t pos) const threadgroup
+	{
+		return __Elements[pos];
+	}
+};
 
 using namespace metal;
 
@@ -11,6 +67,7 @@ struct main0_out
 };
 
 // Returns 2D texture coords corresponding to 1D texel buffer coords
+static inline __attribute__((always_inline))
 uint2 spvTexelBufferCoord(uint tc)
 {
     return uint2(tc % 4096, tc / 4096);
@@ -30,17 +87,18 @@ enum class spvSwizzle : uint
 template<typename T> struct spvRemoveReference { typedef T type; };
 template<typename T> struct spvRemoveReference<thread T&> { typedef T type; };
 template<typename T> struct spvRemoveReference<thread T&&> { typedef T type; };
-template<typename T> inline constexpr thread T&& spvForward(thread typename spvRemoveReference<T>::type& x)
+template<typename T> static inline __attribute__((always_inline)) constexpr thread T&& spvForward(thread typename spvRemoveReference<T>::type& x)
 {
     return static_cast<thread T&&>(x);
 }
-template<typename T> inline constexpr thread T&& spvForward(thread typename spvRemoveReference<T>::type&& x)
+template<typename T> static inline __attribute__((always_inline)) constexpr thread T&& spvForward(thread typename spvRemoveReference<T>::type&& x)
 {
     return static_cast<thread T&&>(x);
 }
 
 template<typename T>
-inline T spvGetSwizzle(vec<T, 4> x, T c, spvSwizzle s)
+static inline __attribute__((always_inline))
+T spvGetSwizzle(vec<T, 4> x, T c, spvSwizzle s)
 {
     switch (s)
     {
@@ -63,7 +121,8 @@ inline T spvGetSwizzle(vec<T, 4> x, T c, spvSwizzle s)
 
 // Wrapper function that swizzles texture samples and fetches.
 template<typename T>
-inline vec<T, 4> spvTextureSwizzle(vec<T, 4> x, uint s)
+static inline __attribute__((always_inline))
+vec<T, 4> spvTextureSwizzle(vec<T, 4> x, uint s)
 {
     if (!s)
         return x;
@@ -71,14 +130,16 @@ inline vec<T, 4> spvTextureSwizzle(vec<T, 4> x, uint s)
 }
 
 template<typename T>
-inline T spvTextureSwizzle(T x, uint s)
+static inline __attribute__((always_inline))
+T spvTextureSwizzle(T x, uint s)
 {
     return spvTextureSwizzle(vec<T, 4>(x, 0, 0, 1), s).x;
 }
 
 // Wrapper function that swizzles texture gathers.
 template<typename T, typename Tex, typename... Ts>
-inline vec<T, 4> spvGatherSwizzle(sampler s, const thread Tex& t, Ts... params, component c, uint sw) METAL_CONST_ARG(c)
+static inline __attribute__((always_inline))
+vec<T, 4> spvGatherSwizzle(sampler s, thread Tex const& t, Ts... params, component c, uint sw) METAL_CONST_ARG(c)
 {
     if (sw)
     {
@@ -115,7 +176,8 @@ inline vec<T, 4> spvGatherSwizzle(sampler s, const thread Tex& t, Ts... params, 
 
 // Wrapper function that swizzles depth texture gathers.
 template<typename T, typename Tex, typename... Ts>
-inline vec<T, 4> spvGatherCompareSwizzle(sampler s, const thread Tex& t, Ts... params, uint sw) 
+static inline __attribute__((always_inline))
+vec<T, 4> spvGatherCompareSwizzle(sampler s, thread Tex const& t, Ts... params, uint sw) 
 {
     if (sw)
     {
@@ -136,6 +198,7 @@ inline vec<T, 4> spvGatherCompareSwizzle(sampler s, const thread Tex& t, Ts... p
     return t.gather_compare(s, spvForward<Ts>(params)...);
 }
 
+static inline __attribute__((always_inline))
 float4 do_samples(thread const texture1d<float> t1, thread const sampler t1Smplr, constant uint& t1Swzl, thread const texture2d<float> t2, constant uint& t2Swzl, thread const texture3d<float> t3, thread const sampler t3Smplr, constant uint& t3Swzl, thread const texturecube<float> tc, constant uint& tcSwzl, thread const texture2d_array<float> t2a, thread const sampler t2aSmplr, constant uint& t2aSwzl, thread const texturecube_array<float> tca, thread const sampler tcaSmplr, constant uint& tcaSwzl, thread const texture2d<float> tb, thread const depth2d<float> d2, thread const sampler d2Smplr, constant uint& d2Swzl, thread const depthcube<float> dc, thread const sampler dcSmplr, constant uint& dcSwzl, thread const depth2d_array<float> d2a, constant uint& d2aSwzl, thread const depthcube_array<float> dca, thread const sampler dcaSmplr, constant uint& dcaSwzl, thread sampler defaultSampler, thread sampler shadowSampler)
 {
     float4 c = spvTextureSwizzle(t1.sample(t1Smplr, 0.0), t1Swzl);
