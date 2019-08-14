@@ -205,6 +205,10 @@ public:
 		bool ios_use_framebuffer_fetch_subpasses = true;
 		/* UE Change End: Use Metal's native frame-buffer fetch API for subpass inputs. */
 
+		/* UE Change Begin: Storage buffer robustness - clamps access to SSBOs to the size of the buffer */
+		bool enforce_storge_buffer_bounds = false;
+		/* UE Change End: Storage buffer robustness - clamps access to SSBOs to the size of the buffer */
+
 		// Requires MSL 2.1, use the native support for texel buffers.
 		bool texture_buffer_native = false;
 
@@ -355,6 +359,9 @@ protected:
 		/* UE Change Begin: Emulate texture2D atomic operations */
 		SPVFuncImplImage2DAtomicCoords,
 		/* UE Change End: Emulate texture2D atomic operations */
+		/* UE Change Begin: Storage buffer robustness */
+		SPVFuncImplStorageBufferCoords,
+		/* UE Change End: Storage buffer robustness */
 		SPVFuncImplInverse4x4,
 		SPVFuncImplInverse3x3,
 		SPVFuncImplInverse2x2,
@@ -431,7 +438,9 @@ protected:
 	bool is_non_native_row_major_matrix(uint32_t id) override;
 	bool member_is_non_native_row_major_matrix(const SPIRType &type, uint32_t index) override;
 	std::string convert_row_major_matrix(std::string exp_str, const SPIRType &exp_type, bool is_packed) override;
-
+	/* UE Change Begin: Storage buffer robustness */
+	std::string access_chain_internal(uint32_t base, const uint32_t *indices, uint32_t count, AccessChainFlags flags, AccessChainMeta *meta) override;
+	/* UE Change End: Storage buffer robustness */
 	void preprocess_op_codes();
 	void localize_global_variables();
 	void extract_global_variables_from_functions();
