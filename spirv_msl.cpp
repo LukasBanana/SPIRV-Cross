@@ -2518,6 +2518,10 @@ void CompilerMSL::emit_store_statement(uint32_t lhs_expression, uint32_t rhs_exp
 			lhs = enclose_expression(lhs) + ".x";
 		else if (is_vector(type) && type.vecsize == 2 && is_array(type))
 			lhs = enclose_expression(lhs) + ".xy";
+		
+		/* UE Change Begin: Remove duplicated swizzles which can happen when this value was swizzled elsewhere. */
+		remove_duplicate_swizzle(lhs);
+		/* UE Change End: Remove duplicated swizzles which can happen when this value was swizzled elsewhere. */
 
 		if (!optimize_read_modify_write(expression_type(rhs_expression), lhs, rhs))
 			statement(lhs, " = ", rhs, ";");
