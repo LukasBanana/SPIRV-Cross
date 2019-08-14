@@ -8265,7 +8265,12 @@ string CompilerMSL::builtin_qualifier(BuiltIn builtin)
 	case BuiltInPointSize:
 		return "point_size";
 	case BuiltInPosition:
+		/* UE Change Begin: Support invariant position for HLSL source. */
+		if (msl_options.supports_msl_version(2, 1) && (execution.model == ExecutionModelVertex || execution.model == ExecutionModelTessellationEvaluation) && ir.source.hlsl == true)
+			return "position, invariant";
+		else
 		return "position";
+		/* UE Change End: Support invariant position for HLSL source. */
 	case BuiltInLayer:
 		return "render_target_array_index";
 	case BuiltInViewportIndex:
