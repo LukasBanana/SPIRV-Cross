@@ -997,6 +997,21 @@ void CompilerMSL::extract_global_variables_from_function(uint32_t func_id, std::
 				break;
 			}
 
+			/* UE Change Begin: Emulate texture2D atomic operations */
+			case OpImageTexelPointer:
+			{
+				// When using the pointer, we need to know which variable it is actually loaded from.
+				uint32_t base_id = ops[2];
+				auto *var = maybe_get_backing_variable(base_id);
+				if (atomic_vars.find(var) != atomic_vars.end())
+				{
+					if (global_var_ids.find(base_id) != global_var_ids.end())
+						added_arg_ids.insert(base_id);
+				}
+				break;
+			}
+			/* UE Change End: Emulate texture2D atomic operations */
+
 			default:
 				break;
 			}
@@ -2683,6 +2698,15 @@ void CompilerMSL::emit_custom_functions()
 			break;
 		}
 
+		/* UE Change Begin: Emulate texture2D atomic operations */
+		case SPVFuncImplImage2DAtomicCoords:
+		{
+			statement("// Returns buffer coords corresponding to 2D texture coords for emulating 2D texture atomics");
+			statement("#define spvImage2DAtomicCoord(tc, Tex) ((Tex.get_width() * tc.x) + tc.y)");
+			break;
+		}
+		/* UE Change End: Emulate texture2D atomic operations */
+
 		case SPVFuncImplInverse4x4:
 			statement("// Returns the determinant of a 2x2 matrix.");
 			/* UE Change Begin: Metal helper functions must be static force-inline otherwise they will cause problems when linked together in a single Metallib. */
@@ -3872,6 +3896,34 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 		break;
 	}
 
+	/* UE Change Begin: Emulate texture2D atomic operations */
+	case OpImageTexelPointer:
+	{
+		// When using the pointer, we need to know which variable it is actually loaded from.
+		auto *var = maybe_get_backing_variable(ops[2]);
+		if (atomic_vars.find(var) != atomic_vars.end())
+		{
+			uint32_t result_type = ops[0];
+			uint32_t id = ops[1];
+			
+			std::string coord = to_expression(ops[3]);
+			auto &type = expression_type(ops[2]);
+			if (type.image.dim == Dim2D)
+			{
+				coord = join("spvImage2DAtomicCoord(", coord, ", ", to_expression(ops[2]), ")");
+			}
+			
+			auto &e = set<SPIRExpression>(id, join(to_expression(ops[2]), "_atomic[", coord, "]"), result_type, true);
+			e.loaded_from = var ? var->self : 0;
+		}
+		else
+		{
+			CompilerGLSL::emit_instruction(instruction);
+		}
+		break;
+	}
+	/* UE Change End: Emulate texture2D atomic operations */
+
 	case OpImageWrite:
 	{
 		uint32_t img_id = ops[0];
@@ -4021,9 +4073,6 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 		}
 		break;
 	}
-
-	case OpImageTexelPointer:
-		SPIRV_CROSS_THROW("MSL does not support atomic operations on images or texel buffers.");
 
 	// Casting
 	case OpQuantizeToF16:
@@ -4348,7 +4397,17 @@ void CompilerMSL::emit_atomic_func_op(uint32_t result_type, uint32_t result_id, 
 	auto *var = maybe_get_backing_variable(obj);
 	if (!var)
 		SPIRV_CROSS_THROW("No backing variable for atomic operation.");
+	/* UE Change Begin: Emulate texture2D atomic operations */
+	const auto &res_type = get<SPIRType>(var->basetype);
+	if (res_type.storage == StorageClassUniformConstant && res_type.basetype == SPIRType::Image)
+	{
+		exp += "device";
+	}
+	else
+	{
 	exp += get_argument_address_space(*var);
+	}
+	/* UE Change End: Emulate texture2D atomic operations */
 	exp += " atomic_";
 	exp += type_to_glsl(type);
 	exp += "*)";
@@ -5192,6 +5251,14 @@ string CompilerMSL::to_func_call_arg(uint32_t id)
 	if (buffers_requiring_array_length.count(var_id))
 		arg_str += ", " + to_buffer_size_expression(var_id ? var_id : id);
 
+	/* UE Change Begin: Emulate texture2D atomic operations */
+	auto *backing_var = maybe_get_backing_variable(var_id);
+	if (atomic_vars.find(backing_var) != atomic_vars.end())
+	{
+		arg_str += ", " + to_expression(var_id) + "_atomic";
+	}
+	/* UE Change End: Emulate texture2D atomic operations */
+	
 	return arg_str;
 }
 
@@ -6218,11 +6285,23 @@ void CompilerMSL::entry_point_args_discrete_descriptors(string &ep_args)
 			ep_args += " [[sampler(" + convert_to_string(r.index) + ")]]";
 			break;
 		case SPIRType::Image:
+        {
 			if (!ep_args.empty())
 				ep_args += ", ";
 			ep_args += image_type_glsl(type, var_id) + " " + r.name;
 			ep_args += " [[texture(" + convert_to_string(r.index) + ")]]";
+                
+            /* UE Change Begin: Emulate texture2D atomic operations */
+            if (atomic_vars.find(&var) != atomic_vars.end())
+            {
+                ep_args += ", device atomic_" + type_to_glsl(get<SPIRType>(basetype.image.type), 0);
+                ep_args += "* " + r.name + "_atomic";
+                ep_args += " [[buffer(" + convert_to_string(r.index) + ")]]";
+            }
+            /* UE Change End: Emulate texture2D atomic operations */
+                
 			break;
+        }
 		default:
 			if (!ep_args.empty())
 				ep_args += ", ";
@@ -6646,6 +6725,15 @@ string CompilerMSL::argument_decl(const SPIRFunction::Parameter &arg)
 		decl += " ";
 		decl += to_expression(name_id);
 	}
+
+	/* UE Change Begin: Emulate texture2D atomic operations */
+	auto *backing_var = maybe_get_backing_variable(name_id);
+	if (atomic_vars.find(backing_var) != atomic_vars.end())
+	{
+		decl += ", device atomic_" + type_to_glsl(get<SPIRType>(var_type.image.type), 0);
+		decl += "* " + to_expression(name_id) + "_atomic";
+	}
+	/* UE Change End: Emulate texture2D atomic operations */
 
 	use_builtin_array = false;
 	/* UE Change End: Allow Metal to use the array<T> template to make arrays a value type */
@@ -8171,6 +8259,15 @@ bool CompilerMSL::OpCodePreprocessor::handle(Op opcode, const uint32_t *args, ui
 		suppress_missing_prototypes = true;
 		break;
 
+	/* UE Change Begin: Emulate texture2D atomic operations */
+	case OpImageTexelPointer:
+	{
+		auto *var = compiler.maybe_get_backing_variable(args[2]);
+		image_pointers[args[1]] = var;
+		break;
+	}
+	/* UE Change End: Emulate texture2D atomic operations */
+			
 	case OpImageWrite:
 		uses_resource_write = true;
 		break;
@@ -8193,13 +8290,41 @@ bool CompilerMSL::OpCodePreprocessor::handle(Op opcode, const uint32_t *args, ui
 	case OpAtomicAnd:
 	case OpAtomicOr:
 	case OpAtomicXor:
+	/* UE Change Begin: Emulate texture2D atomic operations */
+	{
 		uses_atomics = true;
+		auto it = image_pointers.find(args[2]);
+		if (it != image_pointers.end())
+		{
+			compiler.atomic_vars.insert(it->second);
+		}
 		check_resource_write(args[2]);
 		break;
+	}
+
+	case OpAtomicStore:
+	{
+		uses_atomics = true;
+		auto it = image_pointers.find(args[0]);
+		if (it != image_pointers.end())
+		{
+			compiler.atomic_vars.insert(it->second);
+		}
+		check_resource_write(args[0]);
+		break;
+	}
 
 	case OpAtomicLoad:
+	{
 		uses_atomics = true;
+		auto it = image_pointers.find(args[2]);
+		if (it != image_pointers.end())
+		{
+			compiler.atomic_vars.insert(it->second);
+		}
 		break;
+	}
+	/* UE Change End: Emulate texture2D atomic operations */
 
 	case OpGroupNonUniformInverseBallot:
 		needs_subgroup_invocation_id = true;
@@ -8275,6 +8400,34 @@ CompilerMSL::SPVFuncImpl CompilerMSL::OpCodePreprocessor::get_spv_func_impl(Op o
 		break;
 	}
 
+	/* UE Change Begin: Emulate texture2D atomic operations */
+	case OpAtomicExchange:
+	case OpAtomicCompareExchange:
+	case OpAtomicCompareExchangeWeak:
+	case OpAtomicIIncrement:
+	case OpAtomicIDecrement:
+	case OpAtomicIAdd:
+	case OpAtomicISub:
+	case OpAtomicSMin:
+	case OpAtomicUMin:
+	case OpAtomicSMax:
+	case OpAtomicUMax:
+	case OpAtomicAnd:
+	case OpAtomicOr:
+	case OpAtomicXor:
+	case OpAtomicLoad:
+	case OpAtomicStore:
+	{
+		auto it = image_pointers.find(args[opcode == OpAtomicStore ? 0 : 2]);
+		if (it != image_pointers.end())
+		{
+			uint32_t tid = it->second->basetype;
+			if (tid && compiler.get<SPIRType>(tid).image.dim == Dim2D)
+				return SPVFuncImplImage2DAtomicCoords;
+		}
+		break;
+	}
+	/* UE Change End: Emulate texture2D atomic operations */
 	case OpImageFetch:
 	case OpImageRead:
 	case OpImageWrite:

@@ -346,6 +346,9 @@ protected:
 		SPVFuncImplArrayOfArrayCopy5Dim = SPVFuncImplArrayCopyMultidimBase + 5,
 		SPVFuncImplArrayOfArrayCopy6Dim = SPVFuncImplArrayCopyMultidimBase + 6,
 		SPVFuncImplTexelBufferCoords,
+		/* UE Change Begin: Emulate texture2D atomic operations */
+		SPVFuncImplImage2DAtomicCoords,
+		/* UE Change End: Emulate texture2D atomic operations */
 		SPVFuncImplInverse4x4,
 		SPVFuncImplInverse3x3,
 		SPVFuncImplInverse2x2,
@@ -572,6 +575,9 @@ protected:
 	std::unordered_map<uint32_t, MSLConstexprSampler> constexpr_samplers;
 	std::unordered_set<uint32_t> buffers_requiring_array_length;
 	SmallVector<uint32_t> buffer_arrays;
+    /* UE Change Begin: Emulate texture2D atomic operations */
+    std::set<SPIRVariable *> atomic_vars;
+    /* UE Change End: Emulate texture2D atomic operations */
 
 	uint32_t argument_buffer_ids[kMaxArgumentBuffers];
 	uint32_t argument_buffer_discrete_mask = 0;
@@ -597,6 +603,9 @@ protected:
 
 		CompilerMSL &compiler;
 		std::unordered_map<uint32_t, uint32_t> result_types;
+		/* UE Change Begin: Emulate texture2D atomic operations */
+		std::unordered_map<uint32_t, SPIRVariable*> image_pointers;
+		/* UE Change End: Emulate texture2D atomic operations */
 		bool suppress_missing_prototypes = false;
 		bool uses_atomics = false;
 		bool uses_resource_write = false;
