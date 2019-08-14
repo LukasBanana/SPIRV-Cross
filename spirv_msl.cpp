@@ -3653,6 +3653,19 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 
 	switch (opcode)
 	{
+	/* UE Change Begin: Sample mask input for Metal is not an array */
+	case OpLoad:
+	{
+		uint32_t id = ops[1];
+		uint32_t ptr = ops[2];
+		if (ir.meta[ptr].decoration.builtin_type == BuiltInSampleMask)
+		{
+			ir.meta[id].decoration.builtin_type = BuiltInSampleMask;
+		}
+		CompilerGLSL::emit_instruction(instruction);
+		break;
+	}
+	/* UE Change End: Sample mask input for Metal is not an array */
 
 	// Comparisons
 	case OpIEqual:
@@ -9075,8 +9088,10 @@ std::string CompilerMSL::access_chain_internal(uint32_t base, const uint32_t *in
 				if (!pending_array_enclose)
 					expr += "]";
 			}
-			else
-            {
+			/* UE Change Begin: Sample mask input for Metal is not an array */
+			else if (ir.meta[base].decoration.builtin_type != BuiltInSampleMask)
+			/* UE Change End: Sample mask input for Metal is not an array */
+			{
 				append_index(index);
 			}
 			
