@@ -2409,7 +2409,7 @@ void CompilerMSL::align_struct(SPIRType &ib_type)
 
 // Returns whether the specified struct member supports a packable type
 // variation that is smaller than the unpacked variation of that type.
-bool CompilerMSL::is_member_packable(SPIRType &ib_type, uint32_t index)
+bool CompilerMSL::is_member_packable(SPIRType const&ib_type, uint32_t index)
 {
 	// We've already marked it as packable
 	if (has_extended_member_decoration(ib_type.self, index, SPIRVCrossDecorationPacked))
@@ -2426,8 +2426,14 @@ bool CompilerMSL::is_member_packable(SPIRType &ib_type, uint32_t index)
 
 	// Special case for packing. Check for float[] or vec2[] in std140 layout. Here we actually need to pad out instead,
 	// but we will use the same mechanism.
+	size_t array_size = 1;
+	for (auto i : mbr_type.array)
+	{
+		array_size *= i;
+	}
+	size_t NextOffset = index + 1 < ib_type.member_types.size() ? type_struct_member_offset(ib_type, index + 1) : get_declared_struct_size(ib_type);
 	if (is_array(mbr_type) && (is_scalar(mbr_type) || is_vector(mbr_type)) && mbr_type.vecsize <= 2 &&
-	    type_struct_member_array_stride(ib_type, index) == 4 * component_size)
+	    type_struct_member_array_stride(ib_type, index) == 4 * component_size && (type_struct_member_offset(ib_type, index) + (4 * component_size * array_size) <= NextOffset))
 	{
 		return true;
 	}
@@ -2564,12 +2570,18 @@ string CompilerMSL::unpack_expression_type(string expr_str, const SPIRType &type
 		packed_type = &get<SPIRType>(packed_type_id);
 
 	// float[] and float2[] cases are really just padding, so directly swizzle from the backing float4 instead.
-	if (packed_type && is_array(*packed_type) && is_scalar(*packed_type) && !expression_ends_with(expr_str, ".x"))
-		return enclose_expression(expr_str) + ".x";
-	else if (packed_type && is_array(*packed_type) && is_vector(*packed_type) && packed_type->vecsize == 2 && !expression_ends_with(expr_str, ".xy"))
-		return enclose_expression(expr_str) + ".xy";
+	if (packed_type && is_array(*packed_type) && is_scalar(*packed_type))
+	{
+		return !expression_ends_with(expr_str, ".x") ? enclose_expression(expr_str) + ".x" : expr_str;
+	}
+	else if (packed_type && is_array(*packed_type) && is_vector(*packed_type) && packed_type->vecsize == 2)
+	{
+		return !expression_ends_with(expr_str, ".xy") ? enclose_expression(expr_str) + ".xy" : expr_str;
+	}
 	else
+	{
 		return join(type_to_glsl(type), "(", expr_str, ")");
+	}
 }
 /* UE Change End: Metal expands float[]/float2[] members inside structs to float4[] so we must unpack */
 
@@ -3841,7 +3853,7 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 	case OpFRem:
 		MSL_BFOP(fmod);
 		break;
-
+			
 	// Atomics
 	case OpAtomicExchange:
 	{
@@ -4248,7 +4260,7 @@ void CompilerMSL::emit_instruction(const Instruction &instruction)
 			// The simplest solution for now is to just avoid unpacking the matrix in this operation.
 			unset_extended_decoration(mtx_id, SPIRVCrossDecorationPacked);
 
-			emit_binary_op(ops[0], ops[1], ops[3], ops[2], "*");
+				emit_binary_op(ops[0], ops[1], ops[3], ops[2], "*");
 			if (is_packed)
 				set_extended_decoration(mtx_id, SPIRVCrossDecorationPacked);
 			e->need_transpose = true;
@@ -5801,7 +5813,7 @@ string CompilerMSL::to_struct_member(const SPIRType &type, uint32_t member_type_
 	if (has_extended_member_decoration(type.self, index, SPIRVCrossDecorationInterfaceOrigID))
 		orig_id = get_extended_member_decoration(type.self, index, SPIRVCrossDecorationInterfaceOrigID);
 
-	if (member_is_packed_type(type, index))
+	if (member_is_packed_type(type, index) && is_member_packable(type, index))
 	{
 		// If we're packing a matrix, output an appropriate typedef
 		if (membertype.basetype == SPIRType::Struct)
@@ -9182,7 +9194,16 @@ std::string CompilerMSL::access_chain_internal(uint32_t base, const uint32_t *in
 			else if (ir.meta[base].decoration.builtin_type != BuiltInSampleMask)
 			/* UE Change End: Sample mask input for Metal is not an array */
 			{
+				if (is_packed)
+				{
+					if (!remove_duplicate_swizzle(expr))
+						remove_unity_swizzle(base, expr);
+				}
 				append_index(index);
+				if (is_packed)
+				{
+					expr = unpack_expression_type(expr, *type, packed_type);
+				}
 			}
 			
 			type_id = type->parent_type;

@@ -215,7 +215,7 @@ public:
 		/* UE Change Begin: Storage buffer robustness - clamps access to SSBOs to the size of the buffer */
 		bool enforce_storge_buffer_bounds = false;
 		/* UE Change End: Storage buffer robustness - clamps access to SSBOs to the size of the buffer */
-
+		
 		// Requires MSL 2.1, use the native support for texel buffers.
 		bool texture_buffer_native = false;
 
@@ -520,7 +520,7 @@ protected:
 	size_t get_declared_struct_member_alignment(const SPIRType &struct_type, uint32_t index) const;
 	std::string to_component_argument(uint32_t id);
 	void align_struct(SPIRType &ib_type);
-	bool is_member_packable(SPIRType &ib_type, uint32_t index);
+	bool is_member_packable(SPIRType const&ib_type, uint32_t index);
 	MSLStructMemberKey get_struct_member_key(uint32_t type_id, uint32_t index);
 	std::string get_argument_address_space(const SPIRVariable &argument);
 	std::string get_type_address_space(const SPIRType &type, uint32_t id);
